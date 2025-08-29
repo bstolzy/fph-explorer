@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FPH Explorer — Single‑file MVP</title>
+
+  <!-- Leaflet (map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <!-- Plotly (charts) -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <!-- PapaParse (CSV) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <!-- Day.js (dates) -->
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/plugin/customParseFormat.js"></script>
+
+  <style>
+    :root {
+      --bg: #0f172a;       /* slate-900 */
+      --panel: #111827;    /* gray-900 */
+      --muted: #9ca3af;    /* gray-400 */
+      --text: #f8fafc;     /* slate-50 */
+      --accent: #60a5fa;   /* blue-400 */
+      --accent-2: #34d399; /* emerald-400 */
+      --card: #0b1220;     /* deep */
+      --border: #1f2937;   /* gray-800 */
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background: linear-gradient(180deg, #0b1220 0%, #0f172a 100%); color: var(--text);}    
+    header { padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(11,18,32,0.8); backdrop-filter: blur(6px); z-index: 100; }
+    header h1 { margin: 0 0 4px 0; font-size: 18px; font-weight: 700; letter-spacing: .2px; }
+    header small { color: var(--muted); }
+
+    .container { display: grid; grid-template-columns: 340px 1fr; gap: 18px; padding: 18px; }
+    @media (max-width: 980px) { .container { grid-template-columns: 1fr; } }
+
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.35);}    
+    .panel h2 { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
+    .panel .body { padding: 14px 16px; }
+
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    input[type="file"], input[type="text"], select, button { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text);}    
+    input::placeholder { color: #64748b; }
+    button.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border: none; font-weight: 600; cursor: pointer; }
+    button.inline { width: auto; padding: 8px 12px; margin-left: 8px; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 12px; }
+
+    .big { display: grid; grid-template-rows: 1fr 320px; gap: 18px; }
+    #chart, #map { background: var(--card); border: 1px solid var(--border); border-radius: 14px; }
+    #map { min-height: 320px; }
+
+    .table-wrap { overflow: auto; max-height: 380px; border: 1px solid var(--border); border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+    th { position: sticky; top: 0; background: var(--panel); }
+    .meta { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FPH Explorer — Single‑file MVP</h1>
+    <small class="meta">Load your <b>timeseries_all.csv</b> and <b>waterbodies_boundaries_geeid.geojson</b>, then click a polygon to see the time‑series. All in‑browser — no backend.</small>
+  </header>
+
+  <div class="container">
+    <!-- Sidebar -->
+    <aside class="panel">
+      <h2>Data</h2>
+      <div class="body">
+        <div class="row">
+          <label>Timeseries CSV (columns: system_time_utc, UNIQUEID, count, area, tile, date, satname)</label>
+          <input id="csvFile" type="file" accept=".csv" />
+        </div>
+        <div class="row">
+          <label>Polygons GeoJSON (must include <code>GEEID</code> matching CSV <code>UNIQUEID</code>)</label>
+          <input id="geojsonFile" type="file" accept=".geojson,.json" />
+        </div>
+        <div class="row">
+          <label>Timezone offset for timestamps (hours from UTC)</label>
+          <input id="tzOffset" type="text" value="10" />
+        </div>
+        <div class="row">
+          <button id="loadBtn" class="primary">Load / Refresh</button>
+        </div>
+        <div class="row">
+          <label>Search storage (by UNIQUEID)</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="search" type="text" placeholder="e.g. OFS_00645" />
+            <button id="goBtn" class="inline">Go</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>Selected storage</label>
+          <div id="selected" class="meta">—</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="big">
+      <div id="map"></div>
+      <div id="chart"></div>
+    </main>
+  </div>
+
+  <script>
+    // ----- Globals -----
+    dayjs.extend(window.dayjs_plugin_customParseFormat);
+    let gMap, gLayer, gCSV = [], gGroups = new Map(), gPropsById = new Map();
+
+    // Init map
+    gMap = L.map('map', { preferCanvas: true, zoomControl: true }).setView([-28.5, 150.0], 7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(gMap);
+
+    // Helpers
+    function parseCSV(text, tzOffsetHours) {
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+      const rows = parsed.data;
+      const fmt = 'D/M/YYYY H:mm'; // e.g. 23/10/2015 0:02
+      return rows.map(r => {
+        const raw = r.date || r.system_time_utc || r.system_time || r.timestamp;
+        let t = dayjs(raw, fmt, true);
+        if (!t.isValid()) { // try ISO or other defaults
+          const alt = dayjs(raw);
+          t = alt.isValid() ? alt : null;
+        }
+        let d = t ? t.add(Number(tzOffsetHours||0), 'hour').toDate() : null;
+        const area = Number(r.area);
+        return {
+          UNIQUEID: String(r.UNIQUEID || r.uniqueid || r.id || '').trim(),
+          date: d,
+          area_m2: isFinite(area) ? area : NaN,
+          satname: String(r.satname||'').trim(),
+          tile: String(r.tile||'').trim()
+        };
+      }).filter(r => r.UNIQUEID && r.date && isFinite(r.area_m2));
+    }
+
+    function groupByStorage(rows) {
+      const by = new Map();
+      for (const r of rows) {
+        if (!by.has(r.UNIQUEID)) by.set(r.UNIQUEID, []);
+        by.get(r.UNIQUEID).push(r);
+      }
+      for (const [k, arr] of by) arr.sort((a,b)=>a.date-b.date);
+      return by;
+    }
+
+    function drawChart(storageId) {
+      const arr = gGroups.get(storageId) || [];
+      if (!arr.length) {
+        Plotly.newPlot('chart', [], { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', xaxis: { title: 'Date' }, yaxis: { title: 'Surface area (ha)' }, margin: { t: 30, r: 20, b: 40, l: 60 } }, { displayModeBar: false });
+        return;
+      }
+      const x = arr.map(r=>r.date);
+      const y = arr.map(r=> r.area_m2/1e4 ); // m^2 -> ha
+
+      const traces = [{
+        type: 'scatter', mode: 'lines+markers', x, y, name: storageId
+      }];
+
+      const props = gPropsById.get(storageId);
+      const maxHa = props && props.Polygon_Area ? Number(props.Polygon_Area)/1e4 : null;
+      const shapes = [];
+      if (isFinite(maxHa) && maxHa>0) {
+        shapes.push({ type:'line', xref:'paper', x0:0, x1:1, y0:maxHa, y1:maxHa, line:{ dash:'dash'} });
+      }
+
+      Plotly.newPlot('chart', traces, {
+        title: `${storageId} — ${y.length} obs`,
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        margin: { t: 40, r: 20, b: 40, l: 60 },
+        xaxis: { title: 'Date' },
+        yaxis: { title: 'Surface area (ha)' },
+        shapes
+      }, { displayModeBar: true, responsive: true });
+    }
+
+    function fitToFeature(f) {
+      const layer = L.geoJSON(f);
+      gMap.fitBounds(layer.getBounds(), { maxZoom: 14, padding: [20,20] });
+    }
+
+    function buildLayer(geojson) {
+      if (gLayer) { gMap.removeLayer(gLayer); }
+      gLayer = L.geoJSON(geojson, {
+        style: { color: '#60a5fa', weight: 1.2, fillColor: '#60a5fa', fillOpacity: 0.15 },
+        onEachFeature: (feature, layer) => {
+          const props = feature.properties || {};
+          const id = String(props.GEEID || props.UNIQUEID || props.id || '').trim();
+          if (!id) return;
+          gPropsById.set(id, props);
+          const n = (gGroups.get(id)||[]).length;
+          layer.bindTooltip(`${id}${n?` • ${n} obs`:''}`);
+          layer.on('click', () => {
+            document.getElementById('selected').textContent = id;
+            drawChart(id);
+            fitToFeature(feature);
+          });
+        }
+      }).addTo(gMap);
+    }
+
+    // Wire up controls
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+      const csvFile = document.getElementById('csvFile').files[0];
+      const geoFile = document.getElementById('geojsonFile').files[0];
+      const tz = Number(document.getElementById('tzOffset').value || 0);
+
+      if (!csvFile || !geoFile) { alert('Please choose both CSV and GeoJSON files.'); return; }
+
+      const [csvText, geoText] = await Promise.all([
+        csvFile.text(),
+        geoFile.text()
+      ]);
+
+      gCSV = parseCSV(csvText, tz);
+      gGroups = groupByStorage(gCSV);
+
+      let geojson;
+      try { geojson = JSON.parse(geoText); } catch(e){ alert('GeoJSON parse error: '+e.message); return; }
+      buildLayer(geojson);
+
+      // If the search box already has an id, try drawing it
+      const q = document.getElementById('search').value.trim();
+      if (q && gGroups.has(q)) { document.getElementById('selected').textContent = q; drawChart(q); }
+    });
+
+    document.getElementById('goBtn').addEventListener('click', () => {
+      const q = document.getElementById('search').value.trim();
+      if (!q) return;
+      if (!gGroups.has(q)) { alert('Storage not found in CSV: '+q); return; }
+      document.getElementById('selected').textContent = q;
+      drawChart(q);
+      // Attempt to zoom to it if present in polygons
+      if (gLayer) {
+        let hit = null;
+        gLayer.eachLayer(l => {
+          const p = l.feature.properties || {}; const id = String(p.GEEID||p.UNIQUEID||'');
+          if (id === q) hit = l;
+        });
+        if (hit) gMap.fitBounds(hit.getBounds(), { maxZoom: 14, padding:[20,20] });
+      }
+    });
+
+    // Initial blank chart
+    drawChart(null);
+  </script>
+</body>
+</html>
